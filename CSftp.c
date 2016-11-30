@@ -67,18 +67,44 @@ char* handle_type(char* type){
   }
 }
 
+char* handle_mode(char *mode){ 
+  char* response;
+  if(regexecutioner(mode, ".*", REG_EXTENDED|REG_ICASE) == 0){
+    return response = "we only handle stream mode\r\n";
+  }
+  else {
+    return response = "oh god\r\n";
+  }
+}
+
+char* handle_nlst(char* null){
+  return "";
+}
+
+char* handle_pasv(char* null){
+  return "stub";
+}
+
+char* handle_retr(char* null){
+  return "stub";
+}
+
+char* handle_stru(char* null){
+  return "we only handle file structure\r\n";
+}
+
 
 int parse_request(char* request){
   int flags = REG_EXTENDED | REG_ICASE;
   static char* available_commands[] = {
     "\\s*USER\\s+",
-    "MODE",
-    "NLST",
-    "PASV",
-    "RETR",
-    "STRU",
+    "\\s*MODE\\s+[a-zA-Z0-9]+\\s*$",
+    "\\s*NLST\\s+",
+    "\\s*PASV\\s*",
+    "\\s*RETR\\s+",
+    "\\s*STRU\\s+[a-zA-Z0-9]+\\s*$",
     "\\s*TYPE\\s+",
-    "\\s*QUIT\\s+"
+    "\\s*QUIT\\s*"
   };
   int code = 0;
   for(code; code < 8; code++){
@@ -242,6 +268,31 @@ int main(int argc, char **argv) {
           response = handle_login(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
+	case 1:
+          args = buffer + 5;
+          response = handle_mode(args);
+          send(client_socket_fd, response, strlen(response), 0);
+          break;
+	case 2:
+	  args = buffer + 5;
+	  response = handle_nlst(args);
+	  send(client_socket_fd, response, strlen(response), 0);
+	  break;
+	case 3:
+          args = buffer + 5;
+	  response = handle_pasv(args);
+          send(client_socket_fd, response, strlen(response), 0);
+	  break;
+	case 4:
+          args = buffer + 5;
+          response = handle_retr(args);
+          send(client_socket_fd, response, strlen(response), 0);
+	  break;
+	case 5:
+          args = buffer + 5;
+          response = handle_stru(args);
+          send(client_socket_fd, response, strlen(response), 0);
+	  break;
         case 6:
           args = buffer + 5;
           response = handle_type(args);
@@ -252,7 +303,7 @@ int main(int argc, char **argv) {
           send(client_socket_fd, response, strlen(response), 0);
           close(client_socket_fd); // SHUT IT DOWN
           break;
-        default:
+	default:
           response = "502 Command not implemented\r\n";
           send(client_socket_fd, response, strlen(response), 0);
           break;

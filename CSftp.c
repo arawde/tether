@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
   }
   */
   printf("Waiting for connections to socket...\n");
-  printf("Socket address: %p\n\n", get_client_address((struct sockaddr*) server_info));
+  printf("Socket address: %p\n\n", get_address((struct sockaddr*) server_info));
 
 
   // This is how to call the function in dir.c to get a listing of a directory.

@@ -19,6 +19,8 @@
 
 #define BACKLOG 4
 
+struct sockaddr server_ip;
+
 // Get socket address, IPv4/6
 void *get_address(struct sockaddr *sa){
   if(sa->sa_family == AF_INET){
@@ -54,7 +56,6 @@ char* handle_login(char* user){
 }
 
 char* handle_type(char* type){
-  printf("Client is asking for type: %s", type);
   char* response;
   if(regexecutioner(type, "(^\\s*i\\s+|image\\s+)", REG_EXTENDED | REG_ICASE) == 0){
     return response = "200 Switching to Binary mode\r\n";
@@ -67,13 +68,13 @@ char* handle_type(char* type){
   }
 }
 
-char* handle_mode(char *mode){ 
+char* handle_mode(char *mode){
   char* response;
   if(regexecutioner(mode, ".*", REG_EXTENDED|REG_ICASE) == 0){
-    return response = "we only handle stream mode\r\n";
+    return response = "We only handle stream mode\r\n";
   }
   else {
-    return response = "oh god\r\n";
+    return response = "504 Command not implemented for that parameter\r\n";
   }
 }
 
@@ -81,8 +82,66 @@ char* handle_nlst(char* null){
   return "";
 }
 
-char* handle_pasv(char* null){
-  return "stub";
+// Open a connection for passive data transfer
+char* handle_pasv(char* args){
+  char *response = malloc(64 * sizeof(char));
+  char ip[INET_ADDRSTRLEN];
+  int port;
+
+  static int data_socket_fd;
+  // Create our data structure for making a socket...
+  static struct sockaddr_in data_transfer;
+  struct addrinfo server_hints, *server_info;
+  socklen_t data_transfer_size;
+
+  if((data_socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1){
+    return response = "425 Cannot open data connection\r\n";
+  }
+
+  memset(&server_hints, 0, sizeof server_hints);
+  server_hints.ai_family = AF_UNSPEC;
+  server_hints.ai_socktype = SOCK_STREAM;
+  server_hints.ai_flags = AI_PASSIVE;
+  int rv;
+  if((rv = getaddrinfo(NULL, 0, &server_hints, &server_info)) != 0){
+    fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(rv));
+  }
+
+  for(server_info = &server_hints; server_info != NULL; server_info ->ai_next){
+    // lol ipv4 only
+    if(server_info->ai_family == AF_INET){
+      data_transfer = *(struct sockaddr_in*) server_info->ai_addr;
+      strcpy(inet_ntoa(data_transfer.sin_addr), ip);
+    }
+  }
+
+  printf("IP is... %s\n", ip);
+
+  data_transfer_size = sizeof server_hints;
+
+  if(bind(data_socket_fd, (struct sockaddr*) &data_transfer, sizeof(data_transfer))
+      == -1){
+    return response = "425 Cannot open data connection\r\n";
+  }
+
+  if(listen(data_socket_fd, BACKLOG) == -1){
+    return response = "425 Cannot listen on created socket\r\n";
+  }
+
+
+  getsockname(data_socket_fd, (struct sockaddr*) &data_transfer, &data_transfer_size);
+  port = ntohs(data_transfer.sin_port);
+
+  //hostip = gethostbyname("localhost");
+
+
+
+  printf("Constructing response...\n");
+
+  sprintf(response, "227 Entering Passive Mode (%s)\r\n", ip);
+
+  printf("%s",response);
+  return response;
 }
 
 char* handle_retr(char* null){
@@ -90,7 +149,7 @@ char* handle_retr(char* null){
 }
 
 char* handle_stru(char* null){
-  return "we only handle file structure\r\n";
+  return "We only handle file structure\r\n";
 }
 
 
@@ -98,11 +157,11 @@ int parse_request(char* request){
   int flags = REG_EXTENDED | REG_ICASE;
   static char* available_commands[] = {
     "\\s*USER\\s+",
-    "\\s*MODE\\s+[a-zA-Z0-9]+\\s*$",
+    "\\s*MODE\\s+\\w+\\s*$",
     "\\s*NLST\\s+",
     "\\s*PASV\\s*",
     "\\s*RETR\\s+",
-    "\\s*STRU\\s+[a-zA-Z0-9]+\\s*$",
+    "\\s*STRU\\s+\\w+\\s*",
     "\\s*TYPE\\s+",
     "\\s*QUIT\\s*"
   };
@@ -216,8 +275,10 @@ int main(int argc, char **argv) {
     exit(1);
   }
   */
+
   printf("Waiting for connections to socket...\n");
-  printf("Socket address: %p\n\n", get_address((struct sockaddr*) server_info));
+  // What is our IP?
+  //server_ip =
 
 
   // This is how to call the function in dir.c to get a listing of a directory.
@@ -262,48 +323,49 @@ int main(int argc, char **argv) {
       recv(client_socket_fd, buffer, sizeof buffer, 0);
       printf("Client said: %s\n", buffer);
       code = parse_request(buffer);
+      printf("Request said: %d\n", code);
       switch (code){
-        case 0:
+        case 0: // USER
           args = buffer + 5;
           response = handle_login(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
-	case 1:
+        case 1: // MODE
           args = buffer + 5;
           response = handle_mode(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
-	case 2:
-	  args = buffer + 5;
-	  response = handle_nlst(args);
-	  send(client_socket_fd, response, strlen(response), 0);
-	  break;
-	case 3:
+        case 2:
           args = buffer + 5;
-	  response = handle_pasv(args);
+          response = handle_nlst(args);
           send(client_socket_fd, response, strlen(response), 0);
-	  break;
-	case 4:
+          break;
+        case 3: // PASV
+          args = buffer + 5;
+          response = handle_pasv(args);
+          //send(client_socket_fd, response, strlen(response), 0);
+          break;
+        case 4:
           args = buffer + 5;
           response = handle_retr(args);
           send(client_socket_fd, response, strlen(response), 0);
-	  break;
-	case 5:
+          break;
+        case 5:
           args = buffer + 5;
           response = handle_stru(args);
           send(client_socket_fd, response, strlen(response), 0);
-	  break;
+          break;
         case 6:
           args = buffer + 5;
           response = handle_type(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
-        case 7:
+        case 7: // QUIT
           response = "221 Goodbye\r\n";
           send(client_socket_fd, response, strlen(response), 0);
           close(client_socket_fd); // SHUT IT DOWN
           break;
-	default:
+        default:
           response = "502 Command not implemented\r\n";
           send(client_socket_fd, response, strlen(response), 0);
           break;

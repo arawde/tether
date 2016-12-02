@@ -6,8 +6,8 @@
 #include <stddef.h>
 #include "dir.h"
 
-/* 
-   Arguments: 
+/*
+   Arguments:
       fd - a valid open file descriptor. This is not checked for validity
            or for errors with it is used.
       directory - a pointer to a null terminated string that names a 
@@ -18,28 +18,26 @@
          to read it.
       -2 insufficient resources to perform request
 
- 
+
    This function takes the name of a directory and lists all the regular
-   files and directoies in the directory. 
- 
+   files and directoies in the directory.
 
  */
 
 int listFiles(int fd, char * directory) {
 
   // Get resources to see if the directory can be opened for reading
-  
   DIR * dir = NULL;
-  
+
   dir = opendir(directory);
   if (!dir) return -1;
-  
+
   // Setup to read the directory. When printing the directory
-  // only print regular files and directories. 
+  // only print regular files and directories.
 
   struct dirent *dirEntry;
   int entriesPrinted = 0;
-  
+
   for (dirEntry = readdir(dir);
        dirEntry;
        dirEntry = readdir(dir)) {
@@ -52,10 +50,9 @@ int listFiles(int fd, char * directory) {
     }
     entriesPrinted++;
   }
-  
+
   // Release resources
   closedir(dir);
   return entriesPrinted;
 }
 
-   

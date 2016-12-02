@@ -7,6 +7,7 @@
 // System libraries & networking
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <regex.h>
 //#include <signal.h>
@@ -82,66 +83,84 @@ char* handle_nlst(char* null){
   return "";
 }
 
-// Open a connection for passive data transfer
-char* handle_pasv(char* args){
-  char *response = malloc(64 * sizeof(char));
-  char ip[INET_ADDRSTRLEN];
+// Create a socket for passive data transfer
+int handle_pasv(int client_socket){
+  char* response;
+  char ip[INET6_ADDRSTRLEN];
   int port;
 
-  static int data_socket_fd;
+  // Structures for finding our IP...
+  struct ifaddrs *interface_list, *interface;
+  static struct sockaddr_in *host;
+  socklen_t host_size;
+  static int passive_fd;
+
+  getifaddrs(&interface_list);
+  for(interface = interface_list; interface; interface = interface->ifa_next){
+    if(interface->ifa_addr->sa_family == AF_INET){ // IPv4 only
+      host = (struct sockaddr_in *) interface ->ifa_addr;
+      strcpy(ip, inet_ntoa(host->sin_addr)); // We got an IP!
+    }
+  }
+
+  // The client needs commas!
+  int i; // xd
+  for(i = 0; i < INET6_ADDRSTRLEN; i++){
+    if(ip[i] == '.'){
+      ip[i] = ',';
+    }
+  }
+
   // Create our data structure for making a socket...
   static struct sockaddr_in data_transfer;
-  struct addrinfo server_hints, *server_info;
-  socklen_t data_transfer_size;
-
-  if((data_socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1){
-    return response = "425 Cannot open data connection\r\n";
-  }
+  struct addrinfo server_hints, *server_info, *p;
 
   memset(&server_hints, 0, sizeof server_hints);
   server_hints.ai_family = AF_UNSPEC;
   server_hints.ai_socktype = SOCK_STREAM;
   server_hints.ai_flags = AI_PASSIVE;
-  int rv;
-  if((rv = getaddrinfo(NULL, 0, &server_hints, &server_info)) != 0){
-    fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(rv));
+
+  int err;
+
+  if((err = getaddrinfo(NULL, "0", &server_hints, &server_info)) != 0){
+    fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(err));
+    return -1;
   }
 
-  for(server_info = &server_hints; server_info != NULL; server_info ->ai_next){
-    // lol ipv4 only
-    if(server_info->ai_family == AF_INET){
-      data_transfer = *(struct sockaddr_in*) server_info->ai_addr;
-      strcpy(inet_ntoa(data_transfer.sin_addr), ip);
+  // Lets get a socket! (This is familiar)
+  for(p = server_info; p != NULL; p->ai_next){
+    // Set up our socket (hopefully)
+    if((passive_fd = socket(p->ai_family, p->ai_socktype,
+            p->ai_protocol)) == -1){
+      response = "425 Cannot open data connection\r\n";
+      send(client_socket, response, strlen(response), 0);
+      continue;
     }
+    // Bind our socket
+    if(bind(passive_fd, (struct sockaddr*) &data_transfer, sizeof data_transfer)
+        == -1){
+      response = "425 Cannot bind data transfer socket\r\n";
+      send(client_socket, response, strlen(response), 0);
+      continue;
+    }
+    break; // mission accomplished
   }
 
-  printf("IP is... %s\n", ip);
+  freeaddrinfo(server_info);
 
-  data_transfer_size = sizeof server_hints;
-
-  if(bind(data_socket_fd, (struct sockaddr*) &data_transfer, sizeof(data_transfer))
-      == -1){
-    return response = "425 Cannot open data connection\r\n";
+  host_size = sizeof host;
+  if(getsockname(passive_fd, (struct sockaddr*) host, &host_size) != 0){
+    fprintf(stderr, "getsockname(): %s\n", gai_strerror(err));
   }
+  port = ntohs(host->sin_port);
 
-  if(listen(data_socket_fd, BACKLOG) == -1){
-    return response = "425 Cannot listen on created socket\r\n";
-  }
-
-
-  getsockname(data_socket_fd, (struct sockaddr*) &data_transfer, &data_transfer_size);
-  port = ntohs(data_transfer.sin_port);
-
-  //hostip = gethostbyname("localhost");
-
-
-
-  printf("Constructing response...\n");
-
-  sprintf(response, "227 Entering Passive Mode (%s)\r\n", ip);
-
-  printf("%s",response);
-  return response;
+  // Chop our port into bytes
+  char harbor[16];
+  sprintf(harbor, "%d,%d", port / 256, port % 256);
+  char final_response[64];
+  sprintf(final_response, "227 Entering Passive Mode (%s,%s)\r\n", ip, harbor);
+  send(client_socket, final_response, strlen(final_response), 0);
+  return passive_fd;
 }
 
 char* handle_retr(char* null){
@@ -277,18 +296,9 @@ int main(int argc, char **argv) {
   */
 
   printf("Waiting for connections to socket...\n");
-  // What is our IP?
-  //server_ip =
-
 
   // This is how to call the function in dir.c to get a listing of a directory.
   // It requires a file descriptor, so in your code you would pass in the file descriptor
-
-  /*
-   printf("Printed %d directory entries\n", listFiles(1, "."));
-   return 0;
-  */
-
 
   // Sometimes I sit and wait for connections, sometimes I just wait
   while(1){
@@ -318,12 +328,11 @@ int main(int argc, char **argv) {
     char buffer[512];
     memset(&buffer, 0, 512);
     int code = 0;
+    int data_socket = -1;
     char* args;
     while(code != 7){ // 7 = QUIT code from parse_request
       recv(client_socket_fd, buffer, sizeof buffer, 0);
-      printf("Client said: %s\n", buffer);
       code = parse_request(buffer);
-      printf("Request said: %d\n", code);
       switch (code){
         case 0: // USER
           args = buffer + 5;
@@ -335,27 +344,28 @@ int main(int argc, char **argv) {
           response = handle_mode(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
-        case 2:
+        case 2: // NLST
+          if(data_socket < 1){
+            data_socket = handle_pasv(client_socket_fd);
           args = buffer + 5;
-          response = handle_nlst(args);
+          response = handle_nlst(args, data_socket); // data_socket
           send(client_socket_fd, response, strlen(response), 0);
           break;
         case 3: // PASV
-          args = buffer + 5;
-          response = handle_pasv(args);
-          //send(client_socket_fd, response, strlen(response), 0);
+          //args = buffer + 5;
+          data_socket = handle_pasv(client_socket_fd);
           break;
-        case 4:
+        case 4: // RETR
           args = buffer + 5;
-          response = handle_retr(args);
+          response = handle_retr(args); // data_socket
           send(client_socket_fd, response, strlen(response), 0);
           break;
-        case 5:
+        case 5: // STRU
           args = buffer + 5;
           response = handle_stru(args);
           send(client_socket_fd, response, strlen(response), 0);
           break;
-        case 6:
+        case 6: // TYPE
           args = buffer + 5;
           response = handle_type(args);
           send(client_socket_fd, response, strlen(response), 0);

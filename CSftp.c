@@ -79,8 +79,16 @@ char* handle_mode(char *mode){
   }
 }
 
-char* handle_nlst(char* null){
-  return "";
+char* handle_nlst(char* args, int client_socket){
+  int pasv_socket = accept(client_socket, NULL, 0);
+  int list_len = listFiles(client_socket, args);
+  if(list_len < 0){
+    return "550 File not available\r\n";
+  }
+  //send(pasv_socket, (void*) listFiles(pasv_socket, args), list_len, 0);
+
+  close(client_socket); // END OF THE LINE CLUB IM YOUR HOST CASPER
+  return "226 Directory send OK\r\n";
 }
 
 // Create a socket for passive data transfer
@@ -120,9 +128,7 @@ int handle_pasv(int client_socket){
   server_hints.ai_socktype = SOCK_STREAM;
   server_hints.ai_flags = AI_PASSIVE;
 
-  int err;
-
-  if((err = getaddrinfo(NULL, "0", &server_hints, &server_info)) != 0){
+  int err; if((err = getaddrinfo(NULL, "0", &server_hints, &server_info)) != 0){
     fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(err));
     return -1;
   }
@@ -160,6 +166,13 @@ int handle_pasv(int client_socket){
   char final_response[64];
   sprintf(final_response, "227 Entering Passive Mode (%s,%s)\r\n", ip, harbor);
   send(client_socket, final_response, strlen(final_response), 0);
+
+  if(listen(passive_fd, 1) == -1){
+    // We only want one user of this transfer socket
+    perror("Could not listen on socket");
+    return -1;
+  }
+
   return passive_fd;
 }
 
@@ -347,6 +360,7 @@ int main(int argc, char **argv) {
         case 2: // NLST
           if(data_socket < 1){
             data_socket = handle_pasv(client_socket_fd);
+          }
           args = buffer + 5;
           response = handle_nlst(args, data_socket); // data_socket
           send(client_socket_fd, response, strlen(response), 0);

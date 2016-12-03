@@ -10,10 +10,11 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <regex.h>
-//#include <signal.h>
 #include <sys/types.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
-//#include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
 
 #include "dir.h"
 #include "usage.h"
@@ -47,6 +48,36 @@ int regexecutioner(char* string, char* regex, int flags){
   return r;
 }
 
+// Parse requests from the client and return corresponding codes
+int parse_request(char* request){
+  int flags = REG_EXTENDED | REG_ICASE;
+  static char* available_commands[] = {
+    "\\s*USER\\s+",
+    "\\s*MODE\\s+\\w+\\s*$",
+    "\\s*NLST\\s*",
+    "\\s*PASV\\s*",
+    "\\s*RETR\\s+",
+    "\\s*STRU\\s+\\w+\\s*",
+    "\\s*TYPE\\s+",
+    "\\s*QUIT\\s*"
+  };
+  int code = 0;
+  for(code; code < 8; code++){
+    if(regexecutioner(request, available_commands[code], flags) == 0){
+      return code;
+    } else {
+      continue;
+    }
+  }
+  return -1;
+}
+
+/*
+ * A large block of functions for handling different client commands
+ *
+ */
+
+// Handle user login
 char* handle_login(char* user){
   char* response;
   if(regexecutioner(user, "\\s*cs317\\s+$", REG_EXTENDED) == 0){
@@ -56,6 +87,7 @@ char* handle_login(char* user){
   }
 }
 
+// Handle available types
 char* handle_type(char* type){
   char* response;
   if(regexecutioner(type, "(^\\s*i\\s+|image\\s+)", REG_EXTENDED | REG_ICASE) == 0){
@@ -69,6 +101,7 @@ char* handle_type(char* type){
   }
 }
 
+// Handle mode; only `stream` allowed
 char* handle_mode(char *mode){
   char* response;
   if(regexecutioner(mode, ".*", REG_EXTENDED|REG_ICASE) == 0){
@@ -79,19 +112,9 @@ char* handle_mode(char *mode){
   }
 }
 
-char* handle_nlst(char* args, int client_socket){
-  int pasv_socket = accept(client_socket, NULL, 0);
-  int list_len = listFiles(client_socket, args);
-  if(list_len < 0){
-    return "550 File not available\r\n";
-  }
-  //send(pasv_socket, (void*) listFiles(pasv_socket, args), list_len, 0);
-
-  close(client_socket); // END OF THE LINE CLUB IM YOUR HOST CASPER
-  return "226 Directory send OK\r\n";
-}
-
 // Create a socket for passive data transfer
+// A lot of this code is re-used from the initial socket setup copied form Beej
+// inside of main. I wanted to refactor it, but.. you know how that ends up
 int handle_pasv(int client_socket){
   char* response;
   char ip[INET6_ADDRSTRLEN];
@@ -103,6 +126,7 @@ int handle_pasv(int client_socket){
   socklen_t host_size;
   static int passive_fd;
 
+  // Get available interfaces
   getifaddrs(&interface_list);
   for(interface = interface_list; interface; interface = interface->ifa_next){
     if(interface->ifa_addr->sa_family == AF_INET){ // IPv4 only
@@ -164,6 +188,8 @@ int handle_pasv(int client_socket){
   char harbor[16];
   sprintf(harbor, "%d,%d", port / 256, port % 256);
   char final_response[64];
+
+  // Switzerland mode
   sprintf(final_response, "227 Entering Passive Mode (%s,%s)\r\n", ip, harbor);
   send(client_socket, final_response, strlen(final_response), 0);
 
@@ -176,53 +202,64 @@ int handle_pasv(int client_socket){
   return passive_fd;
 }
 
-char* handle_retr(char* null){
-  return "stub";
+// Send a list of directory entries to the client
+char* handle_nlst(int client_socket, int data_socket){
+  int pasv_socket = accept(data_socket, NULL, 0);
+  char* message = "150 Here comes the directory listing\r\n";
+  send(client_socket, message, strlen(message), 0);
+  int list_len = listFiles(pasv_socket, ".");
+  if(list_len < 0){
+    return "550 File not available\r\n";
+  }
+
+  close(pasv_socket);
+  return "226 Directory send OK\r\n";
 }
 
+// Send a file to the client
+char* handle_retr(char* args, int client_socket, int data_socket){
+  char filename[strlen(args)];
+  int i;
+  for(i = 0; i < strlen(args); i++){
+    if(args[i] == '\r' || args[i] == '\n'){
+      filename[i] = '\0';
+      break;
+    }
+    filename[i] = args[i];
+  }
+
+  FILE* file = fopen(filename, "r");
+  if(file == NULL){
+    return "550 File not found\r\n";
+  }
+
+  // We need file size!
+  struct stat file_stats;
+  stat(filename, &file_stats);
+
+  char* message = "150 Opening BINARY mode data connection\r\n";
+  send(client_socket, message, strlen(message), 0);
+
+  int pasv_socket = accept(data_socket, NULL, 0);
+  int success = sendfile(pasv_socket, fileno(file), NULL, file_stats.st_size);
+
+  close(pasv_socket);
+  if(success > 0){
+    return "226 Transfer complete\r\n";
+  } else {
+    perror("Problem sending file...");
+    return "450 Failed to transfer file\r\n";
+  }
+}
+
+// Handle STRU (structure)
 char* handle_stru(char* null){
   return "We only handle file structure\r\n";
 }
 
 
-int parse_request(char* request){
-  int flags = REG_EXTENDED | REG_ICASE;
-  static char* available_commands[] = {
-    "\\s*USER\\s+",
-    "\\s*MODE\\s+\\w+\\s*$",
-    "\\s*NLST\\s+",
-    "\\s*PASV\\s*",
-    "\\s*RETR\\s+",
-    "\\s*STRU\\s+\\w+\\s*",
-    "\\s*TYPE\\s+",
-    "\\s*QUIT\\s*"
-  };
-  int code = 0;
-  for(code; code < 8; code++){
-    if(regexecutioner(request, available_commands[code], flags) == 0){
-      return code;
-    } else {
-      continue;
-    }
-  }
-  return -1;
-
-}
-
-
-// Pause the program for terminated child program signals
-/*void sigchild_handler(int s){
-  int saved_error = errno;
-
-  while(waitpid(-1, NULL, WNOHANG) > 0);
-
-  errno = saved_error;
-}*/
-
-
+// Where the magic happens, if you're Voldemort
 int main(int argc, char **argv) {
-  //// This is the main program for the thread version of nc (what is nc)
-
   // file descriptors for our sockets
   int host_socket_fd, client_socket_fd;
 
@@ -296,24 +333,9 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  /*
-  signals.sa_handler = sigchild_handler; // Set our signal handler (reap processes?)
-  sigemptyset(&signals.sa_mask); // Create an empty set for signals
-  signals.sa_flags = SA_RESTART; // We want to restart pending calls
-
-  // Has our child errored? Check with the handler
-  if(sigaction(SIGCHLD, &signals, NULL) == -1){
-    perror("Signal received from child");
-    exit(1);
-  }
-  */
-
   printf("Waiting for connections to socket...\n");
 
-  // This is how to call the function in dir.c to get a listing of a directory.
-  // It requires a file descriptor, so in your code you would pass in the file descriptor
-
-  // Sometimes I sit and wait for connections, sometimes I just wait
+  // Sometimes I sit and wait for connections, sometimes I just sit and wait
   while(1){
     client_address_size = sizeof client_addresses;
     client_socket_fd = accept(host_socket_fd, (struct sockaddr *) &client_addresses,
@@ -343,6 +365,7 @@ int main(int argc, char **argv) {
     int code = 0;
     int data_socket = -1;
     char* args;
+
     while(code != 7){ // 7 = QUIT code from parse_request
       recv(client_socket_fd, buffer, sizeof buffer, 0);
       code = parse_request(buffer);
@@ -358,20 +381,31 @@ int main(int argc, char **argv) {
           send(client_socket_fd, response, strlen(response), 0);
           break;
         case 2: // NLST
+          args = buffer + 5; // This should be empty
+          // Lets check
+          if(regexecutioner(args, "\\S+", REG_EXTENDED) == 0){
+            response = "501 No parameters allowed for this version of NLST\r\n";
+            send(client_socket_fd, response, strlen(response), 0);
+            break;
+          }
+          // We need a passive data transfer socket if one hasn't been created
+          // previously
+          if(data_socket < 1){
+            data_socket = handle_pasv(client_socket_fd);
+            break;
+          }
+          response = handle_nlst(client_socket_fd, data_socket);
+          send(client_socket_fd, response, strlen(response), 0);
+          break;
+        case 3: // PASV
+          data_socket = handle_pasv(client_socket_fd);
+          break;
+        case 4: // RETR
           if(data_socket < 1){
             data_socket = handle_pasv(client_socket_fd);
           }
           args = buffer + 5;
-          response = handle_nlst(args, data_socket); // data_socket
-          send(client_socket_fd, response, strlen(response), 0);
-          break;
-        case 3: // PASV
-          //args = buffer + 5;
-          data_socket = handle_pasv(client_socket_fd);
-          break;
-        case 4: // RETR
-          args = buffer + 5;
-          response = handle_retr(args); // data_socket
+          response = handle_retr(args, client_socket_fd, data_socket);
           send(client_socket_fd, response, strlen(response), 0);
           break;
         case 5: // STRU
@@ -396,33 +430,5 @@ int main(int argc, char **argv) {
       }
       memset(&buffer, 0, 512); // Reset the buffer before we loop around
     }
-
-    /*int match = regexecutioner(buffer, "\\s*USER\\s+cs317\\s*",
-        REG_ICASE | REG_EXTENDED);
-    if(match == 0){
-      response = "230 Login successful\r\n";
-      send(client_socket_fd, response, strlen(response), 0);
-
-      memset(&buffer, 0, 512);
-      recv(client_socket_fd, buffer, sizeof buffer, 0);
-
-      //handle_commend(buffer) // Returns code for command
-      int code;
-      if(regexecutioner(buffer, "\\s*QUIT\\s*", REG_ICASE | REG_EXTENDED) == 0){
-        code = 221;
-      }
-      switch(code){
-        case 221:
-          response = "221 Goodbye\r\n";
-          send(client_socket_fd, response, strlen(response), 0);
-          close(client_socket_fd);
-          break;
-      }
-
-    }
-    if(match == REG_NOMATCH) {
-      response = "530 Login failed\r\n";
-      send(client_socket_fd, response, strlen(response), 0);
-    }*/
   }
 }
